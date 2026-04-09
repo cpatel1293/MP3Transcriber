@@ -100,14 +100,14 @@ textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)
       <input type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.webm,.flac,.aac,.wma" id="fileInput">
       <span class="dz-icon">📂</span>
       <span class="dz-label" id="dropLabel">Click or drag & drop your audio file</span>
-      <span class="dz-sub">MP3 · WAV · M4A · OGG · FLAC · AAC (max 25MB for Whisper API)</span>
+      <span class="dz-sub">MP3 · WAV · M4A · OGG · FLAC · AAC (max 25MB)</span>
     </div>
     <div id="fileChip" style="display:none" class="file-chip">
       <span>🎵</span>
       <span class="fc-name" id="fileName"></span>
       <span class="fc-size" id="fileSize"></span>
     </div>
-    <div class="size-warn" id="sizeWarn">⚠️ File exceeds 25MB. OpenAI Whisper API has a 25MB limit. Try compressing or trimming the audio first.</div>
+    <div class="size-warn" id="sizeWarn">⚠️ File exceeds 25MB. Whisper API has a 25MB limit. Try compressing or trimming the audio first.</div>
     <div id="transcribeWrap" style="display:none">
       <div class="btn-row center">
         <button class="btn primary" id="transcribeBtn">🎤 Transcribe Audio</button>
@@ -181,7 +181,7 @@ function handleFile(file) {
   }
 }
 
-// Transcribe
+// Transcribe — sends directly to OpenAI from the browser
 $('transcribeBtn').addEventListener('click', async () => {
   if (!selectedFile) return;
   hideError();
@@ -190,17 +190,39 @@ $('transcribeBtn').addEventListener('click', async () => {
   $('rawCard').style.display = 'none';
   $('refinedCard').style.display = 'none';
 
-  setStep('● Uploading to Whisper API...', 'active');
-  setProg('Sending audio for transcription...', 20);
-
-  const form = new FormData();
-  form.append('file', selectedFile);
+  setStep('● Getting API credentials...', 'active');
+  setProg('Preparing...', 10);
 
   try {
-    setProg('Whisper is transcribing (may take 30-60s)...', 50);
-    const resp = await fetch('/api/transcribe', { method: 'POST', body: form });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || 'Transcription failed');
+    // Step 1: Get the OpenAI key from our secure backend
+    const keyResp = await fetch('/api/transcribe', { method: 'POST' });
+    const keyData = await keyResp.json();
+    if (!keyResp.ok || !keyData.key) throw new Error(keyData.error || 'Failed to get API key');
+
+    setStep('● Uploading to Whisper API...', 'active');
+    setProg('Sending audio directly to OpenAI (bypassing size limits)...', 30);
+
+    // Step 2: Send the file directly to OpenAI Whisper API from the browser
+    const form = new FormData();
+    form.append('file', selectedFile);
+    form.append('model', 'whisper-1');
+    form.append('response_format', 'verbose_json');
+    form.append('timestamp_granularities[]', 'segment');
+
+    setProg('Whisper is transcribing (may take 30-90s for large files)...', 50);
+
+    const whisperResp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + keyData.key },
+      body: form
+    });
+
+    if (!whisperResp.ok) {
+      const errBody = await whisperResp.json().catch(() => ({}));
+      throw new Error(errBody.error?.message || 'Whisper API error: ' + whisperResp.status);
+    }
+
+    const data = await whisperResp.json();
 
     setProg('Done!', 100);
     setStep('✓ Transcription complete', 'done');
@@ -241,7 +263,7 @@ $('segToggle').addEventListener('click', () => {
   $('segToggle').textContent = open ? '▾ Hide timestamped segments' : '▸ Show timestamped segments';
 });
 
-// AI Refine
+// AI Refine — still goes through our backend (text only, small payload)
 $('refineBtn').addEventListener('click', async () => {
   const raw = $('rawText').value.trim();
   if (!raw) return;
