@@ -1,6 +1,5 @@
 """
 /api/refine — Accepts raw transcription text, sends to Claude for cleanup.
-Requires ANTHROPIC_API_KEY env var set in Vercel.
 """
 
 import os
@@ -12,19 +11,27 @@ class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             import anthropic
+        except ImportError:
+            self._respond(500, {"error": "anthropic package not installed"})
+            return
 
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-            if not api_key:
-                self._json_response(500, {"error": "ANTHROPIC_API_KEY not configured in Vercel environment variables."})
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            self._respond(500, {"error": "ANTHROPIC_API_KEY not set in environment variables."})
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            if content_length == 0:
+                self._respond(400, {"error": "Empty request body."})
                 return
 
-            content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length)
             data = json.loads(body)
             raw_text = data.get("text", "").strip()
 
             if not raw_text:
-                self._json_response(400, {"error": "No text provided."})
+                self._respond(400, {"error": "No text provided."})
                 return
 
             client = anthropic.Anthropic(api_key=api_key)
@@ -49,21 +56,24 @@ Return ONLY the corrected transcription. No commentary or explanation.""",
             )
 
             refined = "".join(b.text for b in message.content if b.type == "text")
-            self._json_response(200, {"text": refined})
+            self._respond(200, {"text": refined})
 
         except Exception as e:
-            self._json_response(500, {"error": str(e)})
+            self._respond(500, {"error": f"Refinement error: {str(e)}"})
 
-    def _json_response(self, status, data):
+    def _respond(self, status, data):
+        body = json.dumps(data).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
-
-    def do_OPTIONS(self):
-        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
+        self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        self._respond(200, {"ok": True})
+
+    def log_message(self, format, *args):
+        pass
